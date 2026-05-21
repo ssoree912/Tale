@@ -371,12 +371,25 @@ def rail_mask_for_background(
     return mask, source, channel_id
 
 
+def choose_mask_index(ys: np.ndarray, rng: random.Random, strategy: str) -> int:
+    if strategy == "mixed":
+        strategy = "uniform" if rng.random() < 0.70 else "depth-weighted"
+    if strategy == "uniform":
+        return rng.randrange(len(ys))
+
+    # Depth-weighted keeps some perspective realism by preferring lower image
+    # regions, but it can reduce placement diversity if used exclusively.
+    weights = (ys - ys.min() + 1.0) ** 1.4
+    return rng.choices(range(len(ys)), weights=weights, k=1)[0]
+
+
 def sample_location(
     mask: np.ndarray,
     obj_aspect: float,
     bg_wh: tuple[int, int],
     rng: random.Random,
     size_frac: tuple[float, float],
+    placement_strategy: str,
 ) -> tuple[int, int, int, int]:
     bw, bh = bg_wh
     target_w = int(bw * rng.uniform(*size_frac))
@@ -393,8 +406,7 @@ def sample_location(
         eroded = cv2.erode(mask, kernel)
         ys, xs = np.where(eroded > 0)
         if ys.size:
-            weights = (ys - ys.min() + 1.0) ** 1.4
-            idx = rng.choices(range(len(xs)), weights=weights, k=1)[0]
+            idx = choose_mask_index(ys, rng, placement_strategy)
             cx, cy = int(xs[idx]), int(ys[idx])
             x = min(max(0, cx - half_w), max(0, bw - cur_w))
             y = min(max(0, cy - half_h), max(0, bh - cur_h))
@@ -403,7 +415,7 @@ def sample_location(
     ys, xs = np.where(mask > 0)
     if ys.size == 0:
         raise RuntimeError("rail mask is empty")
-    idx = rng.randrange(len(xs))
+    idx = choose_mask_index(ys, rng, placement_strategy)
     cx, cy = int(xs[idx]), int(ys[idx])
     x = min(max(0, cx - target_w // 2), max(0, bw - target_w))
     y = min(max(0, cy - target_h // 2), max(0, bh - target_h))
@@ -508,6 +520,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--background-limit", type=int, default=None, help="Limit available backgrounds after sorting")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--placement-size-frac", type=float, nargs=2, default=(0.10, 0.20), metavar=("MIN", "MAX"))
+    parser.add_argument("--placement-strategy", choices=("mixed", "uniform", "depth-weighted"), default="mixed", help="Rail-mask sampling strategy; uniform gives more diverse locations")
+    parser.add_argument("--placements-per-pair", type=int, default=1, help="Number of random locations for each object/background pair")
     parser.add_argument("--prompt-template", default="an industrial object on a railway track at a steel mill")
     parser.add_argument("--sample-name-format", choices=("prompt", "posco"), default="prompt", help="Use prompt folders or POSCO ids such as ch002_object_1_0000001")
     parser.add_argument("--flat-results", action="store_true", help="Save diffusion results directly as output_dir/<sample>.jpg")
@@ -619,36 +633,40 @@ def main() -> None:
                     rail_cache[key] = rail_mask_for_background(bg_path, train_dir, bg_bgr, args.rail_mask_dir, channel_masks)
                 rail_mask, mask_source, channel_id = rail_cache[key]
 
-                loc = sample_location(
-                    rail_mask,
-                    obj_aspect,
-                    (bw, bh),
-                    rng,
-                    tuple(args.placement_size_frac),
-                )
+                for placement_idx in range(1, args.placements_per_pair + 1):
+                    loc = sample_location(
+                        rail_mask,
+                        obj_aspect,
+                        (bw, bh),
+                        rng,
+                        tuple(args.placement_size_frac),
+                        args.placement_strategy,
+                    )
 
-                counter += 1
-                prompt = prompt_for_object(obj.label, args.prompt_template)
-                sample_name = sample_name_for(channel_id, obj.label, counter, prompt, args.sample_name_format)
-                sample_dir = out_dir / sample_name
-                write_bundle(sample_dir, bg_path, fg_rgb, seg, loc, (bw, bh))
+                    counter += 1
+                    prompt = prompt_for_object(obj.label, args.prompt_template)
+                    sample_name = sample_name_for(channel_id, obj.label, counter, prompt, args.sample_name_format)
+                    sample_dir = out_dir / sample_name
+                    write_bundle(sample_dir, bg_path, fg_rgb, seg, loc, (bw, bh))
 
-                if preview_dir is not None:
-                    write_preview(preview_dir / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
+                    if preview_dir is not None:
+                        write_preview(preview_dir / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
 
-                record = {
-                    "sample": sample_name,
-                    "prompt": prompt,
-                    "object_label": obj.label,
-                    "object_source": str(obj.source_path),
-                    "object_file": str(obj.normalized_path),
-                    "background": str(bg_path),
-                    "location_box_xywh": list(loc),
-                    "rail_mask_source": mask_source,
-                    "channel_id": channel_id,
-                }
-                meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} mask={mask_source}", flush=True)
+                    record = {
+                        "sample": sample_name,
+                        "prompt": prompt,
+                        "object_label": obj.label,
+                        "object_source": str(obj.source_path),
+                        "object_file": str(obj.normalized_path),
+                        "background": str(bg_path),
+                        "location_box_xywh": list(loc),
+                        "placement_index": placement_idx,
+                        "placement_strategy": args.placement_strategy,
+                        "rail_mask_source": mask_source,
+                        "channel_id": channel_id,
+                    }
+                    meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} mask={mask_source}", flush=True)
 
     print(f"done: wrote {counter} samples to {out_dir}", flush=True)
     print(f"metadata: {meta_path}", flush=True)
