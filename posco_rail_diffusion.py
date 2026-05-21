@@ -527,6 +527,8 @@ def run_diffusion(args: argparse.Namespace, data_dir: Path) -> None:
     ]
     if args.flat_results:
         cmd.extend(["--flat_output", "--output_ext", ".jpg"])
+    if args.skip_existing:
+        cmd.append("--skip-existing")
     print("[run]", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
 
@@ -561,6 +563,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-numbering", action="store_true", help="Continue sample numbering from existing out/result/preview files")
     parser.add_argument("--overwrite", action="store_true", help="Remove existing out/result/preview directories first")
     parser.add_argument("--run-diffusion", action="store_true", help="Run posco_main.py after building the dataset")
+    parser.add_argument("--skip-existing", action="store_true", help="When running diffusion, skip samples whose output image already exists")
 
     parser.add_argument("--model_path", type=Path, default=ROOT / "stable-diffusion-2-1-base")
     parser.add_argument("--tprime", type=int, default=12)

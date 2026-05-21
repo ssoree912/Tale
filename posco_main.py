@@ -121,6 +121,7 @@ def main():
     parser.add_argument('--flat_output', action='store_true', help='Save output_dir/<sample>.jpg instead of output_dir/<sample>/results_highres.png')
     parser.add_argument('--output_ext', type=str, default='.jpg')
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
+    parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
 
     args = parser.parse_args()
 
@@ -157,10 +158,18 @@ def main():
     for k, sample in enumerate(sample_names):
         prompt = prompt_for_sample(sample, metadata_prompts, args.default_prompt)
         sample_dir = os.path.join(args.data_dir, sample)
+        ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
         if args.flat_output:
             result_dir = os.path.join(args.output_dir, f".tmp_{sample}")
+            output_path = os.path.join(args.output_dir, f"{sample}{ext}")
         else:
             result_dir = os.path.join(args.output_dir, sample)
+            output_path = os.path.join(result_dir, "results_highres.png")
+
+        if args.skip_existing and os.path.exists(output_path):
+            print(f"[skip-existing] {sample}: {output_path}")
+            continue
+
         os.makedirs(result_dir, exist_ok=True)
 
         bg_path = os.path.join(sample_dir, "background.png")
@@ -262,11 +271,6 @@ def main():
 
             orig_bg_pil.paste(final_patch, (paste_x, paste_y), mask_patch)
 
-        if args.flat_output:
-            ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
-            output_path = os.path.join(args.output_dir, f"{sample}{ext}")
-        else:
-            output_path = os.path.join(result_dir, "results_highres.png")
         orig_bg_pil.save(output_path)
 
 
