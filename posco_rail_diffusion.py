@@ -383,6 +383,17 @@ def choose_mask_index(ys: np.ndarray, rng: random.Random, strategy: str) -> int:
     return rng.choices(range(len(ys)), weights=weights, k=1)[0]
 
 
+def placement_size_for(
+    placement_idx: int,
+    base_size_frac: tuple[float, float],
+    large_size_frac: tuple[float, float] | None,
+    large_every: int,
+) -> tuple[tuple[float, float], str]:
+    if large_size_frac is not None and large_every > 0 and placement_idx % large_every == 0:
+        return large_size_frac, "large"
+    return base_size_frac, "small" if large_size_frac is not None else "base"
+
+
 def sample_location(
     mask: np.ndarray,
     obj_aspect: float,
@@ -519,7 +530,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-backgrounds-per-object", action="store_true", help="Use every background image for every object instead of random sampling")
     parser.add_argument("--background-limit", type=int, default=None, help="Limit available backgrounds after sorting")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--placement-size-frac", type=float, nargs=2, default=(0.10, 0.20), metavar=("MIN", "MAX"))
+    parser.add_argument("--placement-size-frac", type=float, nargs=2, default=(0.10, 0.20), metavar=("MIN", "MAX"), help="Base object width fraction range")
+    parser.add_argument("--large-placement-size-frac", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Optional large object width fraction range")
+    parser.add_argument("--large-placement-every", type=int, default=0, help="Use large-placement-size-frac every Nth placement within each object/background pair")
     parser.add_argument("--placement-strategy", choices=("mixed", "uniform", "depth-weighted"), default="mixed", help="Rail-mask sampling strategy; uniform gives more diverse locations")
     parser.add_argument("--placements-per-pair", type=int, default=1, help="Number of random locations for each object/background pair")
     parser.add_argument("--prompt-template", default="an industrial object on a railway track at a steel mill")
@@ -634,12 +647,18 @@ def main() -> None:
                 rail_mask, mask_source, channel_id = rail_cache[key]
 
                 for placement_idx in range(1, args.placements_per_pair + 1):
+                    placement_size_frac, placement_size_label = placement_size_for(
+                        placement_idx,
+                        tuple(args.placement_size_frac),
+                        tuple(args.large_placement_size_frac) if args.large_placement_size_frac else None,
+                        args.large_placement_every,
+                    )
                     loc = sample_location(
                         rail_mask,
                         obj_aspect,
                         (bw, bh),
                         rng,
-                        tuple(args.placement_size_frac),
+                        placement_size_frac,
                         args.placement_strategy,
                     )
 
@@ -662,11 +681,13 @@ def main() -> None:
                         "location_box_xywh": list(loc),
                         "placement_index": placement_idx,
                         "placement_strategy": args.placement_strategy,
+                        "placement_size_label": placement_size_label,
+                        "placement_size_frac": list(placement_size_frac),
                         "rail_mask_source": mask_source,
                         "channel_id": channel_id,
                     }
                     meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} mask={mask_source}", flush=True)
+                    print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} size={placement_size_label}:{placement_size_frac} mask={mask_source}", flush=True)
 
     print(f"done: wrote {counter} samples to {out_dir}", flush=True)
     print(f"metadata: {meta_path}", flush=True)
