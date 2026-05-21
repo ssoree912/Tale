@@ -398,7 +398,7 @@ def placement_size_for(
 ) -> tuple[tuple[float, float], str]:
     if large_size_frac is not None and large_every > 0 and placement_idx % large_every == 0:
         return large_size_frac, "large"
-    return base_size_frac, "small" if large_size_frac is not None else "base"
+    return base_size_frac, "small"
 
 
 def sample_location(
