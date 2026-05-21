@@ -700,9 +700,18 @@ def main() -> None:
                     if preview_dir is not None:
                         write_preview(preview_dir / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
 
+                    anomaly_path = args.result_dir.resolve() / f"{sample_name}.jpg" if args.flat_results else args.result_dir.resolve() / sample_name / "results_highres.png"
                     record = {
                         "sample": sample_name,
+                        "sample_id": sample_name,
                         "prompt": prompt,
+                        "normal_path": str(bg_path),
+                        "anomaly_path": str(anomaly_path),
+                        "input_dir": str(sample_dir),
+                        "background_path": str(sample_dir / "background.png"),
+                        "foreground_path": str(sample_dir / "foreground.png"),
+                        "segmentation_path": str(sample_dir / "segmentation.png"),
+                        "location_path": str(sample_dir / "location.png"),
                         "object_label": obj.label,
                         "object_source": str(obj.source_path),
                         "object_file": str(obj.normalized_path),
