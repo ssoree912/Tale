@@ -67,8 +67,15 @@ objects_normalized/
 !background/*_mask.bmp
 !background/*_mask.webp
 !objects/
+!objects/**/
 !objects/*.png
 !objects/*.jpg
 !objects/*.jpeg
 !objects/*.bmp
 !objects/*.webp
+!objects/**/*.png
+!objects/**/*.jpg
+!objects/**/*.jpeg
+!objects/**/*.bmp
+!objects/**/*.webp
+objects/**/.ipynb_checkpoints/

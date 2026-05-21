@@ -107,6 +107,24 @@ def prompt_for_sample(sample, metadata_prompts, default_prompt):
     return default_prompt
 
 
+def discover_samples(data_dir):
+    samples = []
+    required = {"background.png", "foreground.png", "segmentation.png", "location.png"}
+    for root, dirs, files in os.walk(data_dir):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        if required.issubset(set(files)):
+            sample_dir = root
+            rel_dir = os.path.relpath(sample_dir, data_dir)
+            sample_name = os.path.basename(sample_dir)
+            rel_parent = os.path.dirname(rel_dir)
+            if rel_parent == ".":
+                rel_parent = ""
+            sample_key = os.path.join(rel_parent, sample_name) if rel_parent else sample_name
+            samples.append((sample_key, sample_name, rel_parent, sample_dir))
+            dirs[:] = []
+    return sorted(samples, key=lambda item: item[0])
+
+
 def main():
     parser = argparse.ArgumentParser(description='Parameters for running TALE framework')
     parser.add_argument('--model_path', type=str, default='./stable-diffusion-2-1-base')
@@ -118,7 +136,7 @@ def main():
     parser.add_argument('--comp_guidance_scale', type=float, default=10.)
     parser.add_argument('--num_inference_steps', type=int, default=20)
     parser.add_argument('--crop_padding', type=float, default=0.5, help='Padding ratio for cropping context')
-    parser.add_argument('--flat_output', action='store_true', help='Save output_dir/<sample>.jpg instead of output_dir/<sample>/results_highres.png')
+    parser.add_argument('--flat_output', action='store_true', help='Save output_dir/<relative>/<sample>.jpg instead of output_dir/<relative>/<sample>/results_highres.png')
     parser.add_argument('--output_ext', type=str, default='.jpg')
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
@@ -150,24 +168,21 @@ def main():
     image_h, image_w = (512, 512) 
 
     metadata_prompts = load_metadata_prompts(args.data_dir)
-    sample_names = [
-        name for name in sorted(os.listdir(args.data_dir))
-        if os.path.isdir(os.path.join(args.data_dir, name))
-    ]
+    samples = discover_samples(args.data_dir)
     os.makedirs(args.output_dir, exist_ok=True)
-    for k, sample in enumerate(sample_names):
+    for k, (sample_key, sample, rel_parent, sample_dir) in enumerate(samples):
         prompt = prompt_for_sample(sample, metadata_prompts, args.default_prompt)
-        sample_dir = os.path.join(args.data_dir, sample)
         ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
+        output_base_dir = os.path.join(args.output_dir, rel_parent) if rel_parent else args.output_dir
         if args.flat_output:
-            result_dir = os.path.join(args.output_dir, f".tmp_{sample}")
-            output_path = os.path.join(args.output_dir, f"{sample}{ext}")
+            result_dir = os.path.join(output_base_dir, f".tmp_{sample}")
+            output_path = os.path.join(output_base_dir, f"{sample}{ext}")
         else:
-            result_dir = os.path.join(args.output_dir, sample)
+            result_dir = os.path.join(output_base_dir, sample)
             output_path = os.path.join(result_dir, "results_highres.png")
 
         if args.skip_existing and os.path.exists(output_path):
-            print(f"[skip-existing] {sample}: {output_path}")
+            print(f"[skip-existing] {sample_key}: {output_path}")
             continue
 
         os.makedirs(result_dir, exist_ok=True)
@@ -280,7 +295,7 @@ def main():
         if args.flat_output:
             shutil.rmtree(result_dir, ignore_errors=True)
         
-        print(f"Processed {sample}: Saved high-res result to {output_path}.")
+        print(f"Processed {sample_key}: Saved high-res result to {output_path}.")
 
 if __name__ == "__main__":
     main()

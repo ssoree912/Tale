@@ -5,9 +5,15 @@ This script expects normal POSCO CCTV frames under a train directory such as:
     ../anomaly_detection/datat/posco/train/02/*.jpg
     ../anomaly_detection/datat/posco/train/04/*.jpg
 
-It creates TALE-style sample folders:
+It creates TALE-style sample folders grouped by placement size:
 
-    <out>/<idx> <prompt>/
+    <out>/small/<sample>/
+        background.png
+        foreground.png
+        segmentation.png
+        location.png
+
+    <out>/large/<sample>/
         background.png
         foreground.png
         segmentation.png
@@ -493,7 +499,7 @@ def max_existing_sample_number(*roots: Path | None) -> int:
     for root in roots:
         if root is None or not root.exists():
             continue
-        for path in root.iterdir():
+        for path in root.rglob("*"):
             number = sample_number_from_name(path.stem if path.is_file() else path.name)
             if number is not None:
                 max_number = max(max_number, number)
@@ -761,13 +767,15 @@ def main() -> None:
                     counter += 1
                     prompt = prompt_for_object(obj.label, args.prompt_template)
                     sample_name = sample_name_for(channel_id, obj.label, counter, prompt, args.sample_name_format)
-                    sample_dir = out_dir / sample_name
+                    size_dir_name = placement_size_label
+                    sample_dir = out_dir / size_dir_name / sample_name
                     write_bundle(sample_dir, bg_path, fg_rgb, seg, loc, (bw, bh))
 
                     if preview_dir is not None:
-                        write_preview(preview_dir / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
+                        write_preview(preview_dir / size_dir_name / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
 
-                    anomaly_path = args.result_dir.resolve() / f"{sample_name}.jpg" if args.flat_results else args.result_dir.resolve() / sample_name / "results_highres.png"
+                    result_root = args.result_dir.resolve()
+                    anomaly_path = result_root / size_dir_name / f"{sample_name}.jpg" if args.flat_results else result_root / size_dir_name / sample_name / "results_highres.png"
                     record = {
                         "sample": sample_name,
                         "sample_id": sample_name,
@@ -787,6 +795,7 @@ def main() -> None:
                         "placement_index": placement_idx,
                         "placement_strategy": args.placement_strategy,
                         "placement_size_label": placement_size_label,
+                        "placement_size_dir": size_dir_name,
                         "placement_size_frac": list(placement_size_frac),
                         "rail_mask_source": mask_source,
                         "channel_id": channel_id,
