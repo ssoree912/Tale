@@ -45,6 +45,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 CHANNEL_PATTERN = re.compile(r"CH\s*0*(\d{1,3})", re.IGNORECASE)
 NUMERIC_CHANNEL_PATTERN = re.compile(r"^(?:ch)?0*(\d{1,3})$", re.IGNORECASE)
 MASK_CHANNEL_PATTERN = re.compile(r"^(?:ch)?0*(\d{1,3})(?:[_ -]*(?:mask|hl))$", re.IGNORECASE)
+SAMPLE_NUMBER_PATTERN = re.compile(r"(?:^|_)(\d{6,7})(?:\D*$|$)")
 
 
 @dataclass(frozen=True)
@@ -480,6 +481,25 @@ def sample_name_for(channel_id: str | None, object_label: str, counter: int, pro
     return f"{counter:06d} {prompt}"
 
 
+def sample_number_from_name(name: str) -> int | None:
+    matches = SAMPLE_NUMBER_PATTERN.findall(name)
+    if not matches:
+        return None
+    return int(matches[-1])
+
+
+def max_existing_sample_number(*roots: Path | None) -> int:
+    max_number = 0
+    for root in roots:
+        if root is None or not root.exists():
+            continue
+        for path in root.iterdir():
+            number = sample_number_from_name(path.stem if path.is_file() else path.name)
+            if number is not None:
+                max_number = max(max_number, number)
+    return max_number
+
+
 def run_diffusion(args: argparse.Namespace, data_dir: Path) -> None:
     cmd = [
         sys.executable,
@@ -538,6 +558,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-template", default="an industrial object on a railway track at a steel mill")
     parser.add_argument("--sample-name-format", choices=("prompt", "posco"), default="prompt", help="Use prompt folders or POSCO ids such as ch002_object_1_0000001")
     parser.add_argument("--flat-results", action="store_true", help="Save diffusion results directly as output_dir/<sample>.jpg")
+    parser.add_argument("--resume-numbering", action="store_true", help="Continue sample numbering from existing out/result/preview files")
     parser.add_argument("--overwrite", action="store_true", help="Remove existing out/result/preview directories first")
     parser.add_argument("--run-diffusion", action="store_true", help="Run posco_main.py after building the dataset")
 
@@ -563,6 +584,9 @@ def main() -> None:
         raise SystemExit(f"missing train dir: {train_dir}")
     if not object_dir.exists():
         raise SystemExit(f"missing object dir: {object_dir}")
+
+    if args.overwrite and args.resume_numbering:
+        raise SystemExit("--overwrite and --resume-numbering cannot be used together")
 
     for path in [out_dir, preview_dir, normalized_object_dir, args.result_dir if args.run_diffusion else None]:
         if path is not None and path.exists() and args.overwrite:
@@ -609,10 +633,15 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     meta_path = out_dir / "metadata.jsonl"
-    counter = 0
+    result_dir_for_numbering = args.result_dir.resolve() if args.result_dir else None
+    counter = max_existing_sample_number(out_dir, preview_dir, result_dir_for_numbering) if args.resume_numbering else 0
+    start_counter = counter
+    if args.resume_numbering:
+        print(f"resume_numbering_start={counter + 1:07d}", flush=True)
     rail_cache: dict[str, tuple[np.ndarray, str, str | None]] = {}
 
-    with meta_path.open("w", encoding="utf-8") as meta_f:
+    meta_mode = "a" if args.resume_numbering else "w"
+    with meta_path.open(meta_mode, encoding="utf-8") as meta_f:
         for obj in objects:
             try:
                 fg_rgb, seg = extract_foreground(obj.normalized_path)
@@ -689,7 +718,7 @@ def main() -> None:
                     meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
                     print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} size={placement_size_label}:{placement_size_frac} mask={mask_source}", flush=True)
 
-    print(f"done: wrote {counter} samples to {out_dir}", flush=True)
+    print(f"done: wrote {counter - start_counter} new samples to {out_dir}", flush=True)
     print(f"metadata: {meta_path}", flush=True)
     if preview_dir is not None:
         print(f"previews: {preview_dir}", flush=True)
