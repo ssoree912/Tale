@@ -113,7 +113,11 @@ def main():
 
     image_h, image_w = (512, 512) 
 
-    for k, sample in enumerate(sorted(os.listdir(args.data_dir))):
+    sample_names = [
+        name for name in sorted(os.listdir(args.data_dir))
+        if os.path.isdir(os.path.join(args.data_dir, name))
+    ]
+    for k, sample in enumerate(sample_names):
         prompt = " ".join(sample.split(" ")[1:])
         sample_dir = os.path.join(args.data_dir, sample)
         result_dir = os.path.join(args.output_dir, sample)
