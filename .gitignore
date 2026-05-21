@@ -1,0 +1,57 @@
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Local model and offline env
+stable-diffusion-2-1-base/
+tale_env_offline/
+release_assets/
+tools/
+tmp/
+
+# Generated datasets / results / previews
+background/
+data/
+examples/
+assets/
+object/
+result/
+results/
+posco/
+posco_dataset*/
+posco_results*/
+posco_flat*/
+posco_final/
+posco_rail_dataset*/
+posco_rail_results*/
+posco_rail_preview*/
+objects_normalized/
+
+# Logs and archives
+*.log
+*.tar
+*.zip
+*.7z
+*.zst
+
+# Ignore image files everywhere except normalized objects.
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+*.gif
+*.tif
+*.tiff
+!objects/
+!objects/*.png
+!objects/*.jpg
+!objects/*.jpeg
+!objects/*.bmp
+!objects/*.webp
