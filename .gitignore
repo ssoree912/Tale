@@ -1,0 +1,73 @@
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/
+.claude/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Local model and offline env
+stable-diffusion-2-1-base/
+tale_env_offline/
+release_assets/
+tools/
+tmp/
+
+# Generated datasets / results / previews
+background/*
+!background/
+!background/*_mask.png
+!background/*_mask.jpg
+!background/*_mask.jpeg
+!background/*_mask.bmp
+!background/*_mask.webp
+background_hl_originals/
+data/
+diffusion_result/
+examples/
+assets/
+object/
+result/
+results/
+posco/
+posco_dataset*/
+posco_results*/
+posco_flat*/
+posco_final/
+posco_rail_dataset*/
+posco_rail_results*/
+posco_rail_preview*/
+objects_normalized/
+
+# Logs and archives
+*.log
+*.tar
+*.zip
+*.7z
+*.zst
+
+# Ignore image files everywhere except repo-managed masks and objects.
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+*.gif
+*.tif
+*.tiff
+# Exceptions for repo-managed assets.
+!background/
+!background/*_mask.png
+!background/*_mask.jpg
+!background/*_mask.jpeg
+!background/*_mask.bmp
+!background/*_mask.webp
+!objects/
+!objects/*.png
+!objects/*.jpg
+!objects/*.jpeg
+!objects/*.bmp
+!objects/*.webp
