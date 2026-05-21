@@ -500,6 +500,57 @@ def max_existing_sample_number(*roots: Path | None) -> int:
     return max_number
 
 
+def canonical_path_key(value: str | Path | None) -> str:
+    if value is None:
+        return ""
+    return str(Path(value).expanduser().resolve(strict=False))
+
+
+def size_frac_key(size_frac: Iterable[float] | None) -> tuple[float, ...]:
+    if size_frac is None:
+        return ()
+    return tuple(round(float(x), 6) for x in size_frac)
+
+
+def generation_key(
+    normal_path: str | Path,
+    object_label: str,
+    placement_idx: int,
+    placement_size_label: str,
+    placement_size_frac: Iterable[float],
+) -> tuple[str, str, int, str, tuple[float, ...]]:
+    return (
+        canonical_path_key(normal_path),
+        object_label,
+        int(placement_idx),
+        placement_size_label,
+        size_frac_key(placement_size_frac),
+    )
+
+
+def load_existing_generation_keys(meta_path: Path) -> set[tuple[str, str, int, str, tuple[float, ...]]]:
+    keys: set[tuple[str, str, int, str, tuple[float, ...]]] = set()
+    if not meta_path.exists():
+        return keys
+    with meta_path.open("r", encoding="utf-8") as meta_f:
+        for line in meta_f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            normal_path = record.get("normal_path") or record.get("background")
+            object_label = record.get("object_label")
+            placement_idx = record.get("placement_index")
+            size_label = record.get("placement_size_label")
+            size_frac = record.get("placement_size_frac")
+            if normal_path and object_label and placement_idx is not None and size_label and size_frac:
+                keys.add(generation_key(normal_path, object_label, placement_idx, size_label, size_frac))
+    return keys
+
+
 def run_diffusion(args: argparse.Namespace, data_dir: Path) -> None:
     cmd = [
         sys.executable,
@@ -561,6 +612,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-name-format", choices=("prompt", "posco"), default="prompt", help="Use prompt folders or POSCO ids such as ch002_object_1_0000001")
     parser.add_argument("--flat-results", action="store_true", help="Save diffusion results directly as output_dir/<sample>.jpg")
     parser.add_argument("--resume-numbering", action="store_true", help="Continue sample numbering from existing out/result/preview files")
+    parser.add_argument("--skip-existing-inputs", action="store_true", help="Skip background/object/placement/size combinations already present in metadata.jsonl; enabled automatically by --resume-numbering")
     parser.add_argument("--overwrite", action="store_true", help="Remove existing out/result/preview directories first")
     parser.add_argument("--run-diffusion", action="store_true", help="Run posco_main.py after building the dataset")
     parser.add_argument("--skip-existing", action="store_true", help="When running diffusion, skip samples whose output image already exists")
@@ -590,6 +642,8 @@ def main() -> None:
 
     if args.overwrite and args.resume_numbering:
         raise SystemExit("--overwrite and --resume-numbering cannot be used together")
+    if args.resume_numbering:
+        args.skip_existing_inputs = True
 
     for path in [out_dir, preview_dir, normalized_object_dir, args.result_dir if args.run_diffusion else None]:
         if path is not None and path.exists() and args.overwrite:
@@ -641,6 +695,10 @@ def main() -> None:
     start_counter = counter
     if args.resume_numbering:
         print(f"resume_numbering_start={counter + 1:07d}", flush=True)
+    existing_generation_keys = load_existing_generation_keys(meta_path) if args.skip_existing_inputs else set()
+    if args.skip_existing_inputs:
+        print(f"existing_generation_keys={len(existing_generation_keys)}", flush=True)
+    skipped_existing_inputs = 0
     rail_cache: dict[str, tuple[np.ndarray, str, str | None]] = {}
 
     meta_mode = "a" if args.resume_numbering else "w"
@@ -685,6 +743,12 @@ def main() -> None:
                         tuple(args.large_placement_size_frac) if args.large_placement_size_frac else None,
                         args.large_placement_every,
                     )
+                    current_key = generation_key(bg_path, obj.label, placement_idx, placement_size_label, placement_size_frac)
+                    if current_key in existing_generation_keys:
+                        skipped_existing_inputs += 1
+                        print(f"[skip-existing-input] bg={bg_path.relative_to(train_dir)} object={obj.label} placement={placement_idx} size={placement_size_label}:{placement_size_frac}", flush=True)
+                        continue
+
                     loc = sample_location(
                         rail_mask,
                         obj_aspect,
@@ -728,9 +792,12 @@ def main() -> None:
                         "channel_id": channel_id,
                     }
                     meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    existing_generation_keys.add(current_key)
                     print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} size={placement_size_label}:{placement_size_frac} mask={mask_source}", flush=True)
 
     print(f"done: wrote {counter - start_counter} new samples to {out_dir}", flush=True)
+    if args.skip_existing_inputs:
+        print(f"skipped_existing_inputs={skipped_existing_inputs}", flush=True)
     print(f"metadata: {meta_path}", flush=True)
     if preview_dir is not None:
         print(f"previews: {preview_dir}", flush=True)
