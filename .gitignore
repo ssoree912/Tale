@@ -15,6 +15,7 @@ tale_env_offline/
 release_assets/
 tools/
 tmp/
+clip_weights/
 
 # Generated datasets / results / previews
 background/*

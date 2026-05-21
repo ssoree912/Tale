@@ -1,5 +1,6 @@
 import cv2
 import os
+from pathlib import Path
 import torch
 import torchvision
 import torch.nn as nn
@@ -10,9 +11,19 @@ from .clip import clip
 # model_name = "ViT-B/16"
 model_name = "ViT-B/32"
 
+def resolve_clip_model_path():
+    filename = "ViT-B-32.pt"
+    repo_path = Path(__file__).resolve().parents[1] / "clip_weights" / filename
+    cache_path = Path.home() / ".cache" / "clip" / filename
+    if repo_path.is_file():
+        return str(repo_path)
+    if cache_path.is_file():
+        return str(cache_path)
+    return clip._download(clip._MODELS[model_name])
+
+
 def load_clip_to_cpu():
-    url = clip._MODELS[model_name]
-    model_path = clip._download(url)
+    model_path = resolve_clip_model_path()
 
     try:
         # loading JIT archive
