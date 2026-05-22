@@ -136,6 +136,27 @@ def discover_samples(data_dir):
     return sorted(samples, key=sample_sort_key)
 
 
+def collect_existing_outputs(output_dir, flat_output, output_ext):
+    existing = {}
+    if not os.path.isdir(output_dir):
+        return existing
+
+    ext = output_ext if output_ext.startswith(".") else f".{output_ext}"
+    ext = ext.lower()
+    for root, dirs, files in os.walk(output_dir):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        if flat_output:
+            for name in files:
+                if name.startswith("."):
+                    continue
+                stem, suffix = os.path.splitext(name)
+                if suffix.lower() == ext:
+                    existing.setdefault(stem, os.path.join(root, name))
+        elif "results_highres.png" in files:
+            existing.setdefault(os.path.basename(root), os.path.join(root, "results_highres.png"))
+    return existing
+
+
 def main():
     parser = argparse.ArgumentParser(description='Parameters for running TALE framework')
     parser.add_argument('--model_path', type=str, default='./stable-diffusion-2-1-base')
@@ -180,10 +201,13 @@ def main():
 
     metadata_prompts = load_metadata_prompts(args.data_dir)
     samples = discover_samples(args.data_dir)
+    ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
+    existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
+    if args.skip_existing:
+        print(f"existing_outputs={len(existing_outputs)}")
     os.makedirs(args.output_dir, exist_ok=True)
     for k, (sample_key, sample, rel_parent, sample_dir) in enumerate(samples):
         prompt = prompt_for_sample(sample, metadata_prompts, args.default_prompt)
-        ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
         output_base_dir = os.path.join(args.output_dir, rel_parent) if rel_parent else args.output_dir
         if args.flat_output:
             result_dir = os.path.join(output_base_dir, f".tmp_{sample}")
@@ -192,8 +216,9 @@ def main():
             result_dir = os.path.join(output_base_dir, sample)
             output_path = os.path.join(result_dir, "results_highres.png")
 
-        if args.skip_existing and os.path.exists(output_path):
-            print(f"[skip-existing] {sample_key}: {output_path}")
+        existing_output = existing_outputs.get(sample)
+        if args.skip_existing and (os.path.exists(output_path) or existing_output):
+            print(f"[skip-existing] {sample_key}: {existing_output or output_path}")
             continue
 
         os.makedirs(result_dir, exist_ok=True)
