@@ -157,6 +157,18 @@ def collect_existing_outputs(output_dir, flat_output, output_ext):
     return existing
 
 
+def output_paths(output_dir, rel_parent, sample, flat_output, output_ext):
+    ext = output_ext if output_ext.startswith(".") else f".{output_ext}"
+    output_base_dir = os.path.join(output_dir, rel_parent) if rel_parent else output_dir
+    if flat_output:
+        result_dir = os.path.join(output_base_dir, f".tmp_{sample}")
+        output_path = os.path.join(output_base_dir, f"{sample}{ext}")
+    else:
+        result_dir = os.path.join(output_base_dir, sample)
+        output_path = os.path.join(result_dir, "results_highres.png")
+    return result_dir, output_path
+
+
 def main():
     parser = argparse.ArgumentParser(description='Parameters for running TALE framework')
     parser.add_argument('--model_path', type=str, default='./stable-diffusion-2-1-base')
@@ -174,6 +186,27 @@ def main():
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
 
     args = parser.parse_args()
+
+    metadata_prompts = load_metadata_prompts(args.data_dir)
+    samples = discover_samples(args.data_dir)
+    ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
+    existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
+
+    pending_samples = []
+    os.makedirs(args.output_dir, exist_ok=True)
+    for sample_key, sample, rel_parent, sample_dir in samples:
+        result_dir, output_path = output_paths(args.output_dir, rel_parent, sample, args.flat_output, ext)
+        existing_output = existing_outputs.get(sample)
+        if args.skip_existing and (os.path.exists(output_path) or existing_output):
+            print(f"[skip-existing] {sample_key}: {existing_output or output_path}")
+            continue
+        pending_samples.append((sample_key, sample, rel_parent, sample_dir, result_dir, output_path))
+
+    if args.skip_existing:
+        print(f"samples_total={len(samples)} existing_outputs={len(existing_outputs)} pending_samples={len(pending_samples)}")
+    if not pending_samples:
+        print("no pending samples; all outputs already exist")
+        return
 
     device = "cuda:0"
     
@@ -199,28 +232,8 @@ def main():
 
     image_h, image_w = (512, 512) 
 
-    metadata_prompts = load_metadata_prompts(args.data_dir)
-    samples = discover_samples(args.data_dir)
-    ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
-    existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
-    if args.skip_existing:
-        print(f"existing_outputs={len(existing_outputs)}")
-    os.makedirs(args.output_dir, exist_ok=True)
-    for k, (sample_key, sample, rel_parent, sample_dir) in enumerate(samples):
+    for k, (sample_key, sample, rel_parent, sample_dir, result_dir, output_path) in enumerate(pending_samples):
         prompt = prompt_for_sample(sample, metadata_prompts, args.default_prompt)
-        output_base_dir = os.path.join(args.output_dir, rel_parent) if rel_parent else args.output_dir
-        if args.flat_output:
-            result_dir = os.path.join(output_base_dir, f".tmp_{sample}")
-            output_path = os.path.join(output_base_dir, f"{sample}{ext}")
-        else:
-            result_dir = os.path.join(output_base_dir, sample)
-            output_path = os.path.join(result_dir, "results_highres.png")
-
-        existing_output = existing_outputs.get(sample)
-        if args.skip_existing and (os.path.exists(output_path) or existing_output):
-            print(f"[skip-existing] {sample_key}: {existing_output or output_path}")
-            continue
-
         os.makedirs(result_dir, exist_ok=True)
 
         bg_path = os.path.join(sample_dir, "background.png")
