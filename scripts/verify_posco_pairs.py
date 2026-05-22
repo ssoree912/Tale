@@ -98,7 +98,7 @@ def resolve_result_path(
     flat_output: bool,
 ) -> Path | None:
     explicit = existing_path(record.get("anomaly_path"))
-    if explicit is not None:
+    if explicit is not None and explicit.exists():
         return explicit
 
     sample = record.get("sample_id") or record.get("sample")
@@ -112,8 +112,10 @@ def resolve_result_path(
         if candidate.exists():
             return candidate
     if sample:
-        return result_index.get(sample)
-    return None
+        inferred = result_index.get(sample)
+        if inferred is not None:
+            return inferred
+    return explicit
 
 
 def record_value_path(record: dict, key: str, fallback: Path | None = None) -> Path | None:
@@ -129,6 +131,7 @@ def main() -> int:
     parser.add_argument("--output-ext", default=".jpg")
     parser.add_argument("--flat-output", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-examples", type=int, default=20)
+    parser.add_argument("--require-results", action="store_true", help="Treat metadata rows without generated result images as errors")
     parser.add_argument("--strict-warnings", action="store_true")
     args = parser.parse_args()
 
@@ -148,6 +151,7 @@ def main() -> int:
     seen_samples: dict[str, int] = {}
     size_counts: dict[str, int] = {}
     result_pairs = 0
+    pending_results = 0
 
     for record in records:
         line_no = record["_line_no"]
@@ -167,6 +171,13 @@ def main() -> int:
         normal_path = record_value_path(record, "normal_path", existing_path(record.get("background")))
         input_dir = resolve_input_dir(record, input_root, input_index)
         result_path = resolve_result_path(record, result_root, result_index, args.output_ext, args.flat_output)
+        result_exists = result_path is not None and result_path.exists()
+
+        if not result_exists:
+            pending_results += 1
+            if args.require_results:
+                errors.append(f"line {line_no} {sample}: result image not found under {result_root}")
+            continue
 
         if "normal_path" not in record:
             warnings.append(f"line {line_no} {sample}: missing normal_path; using legacy background field")
@@ -192,21 +203,19 @@ def main() -> int:
             if size_dir in {"small", "large"} and input_dir.parent.name != size_dir:
                 errors.append(f"line {line_no} {sample}: input size dir mismatch: metadata={size_dir}, path={input_dir}")
 
-        if result_path is None:
-            errors.append(f"line {line_no} {sample}: result image not found under {result_root}")
-        elif not result_path.exists():
-            errors.append(f"line {line_no} {sample}: result path does not exist: {result_path}")
-        else:
-            result_pairs += 1
-            if result_path.stem != sample and args.flat_output:
-                errors.append(f"line {line_no} {sample}: result filename mismatch: {result_path}")
-            if size_dir in {"small", "large"} and result_path.parent.name != size_dir:
-                errors.append(f"line {line_no} {sample}: result size dir mismatch: metadata={size_dir}, path={result_path}")
+        result_pairs += 1
+        if result_path.stem != sample and args.flat_output:
+            errors.append(f"line {line_no} {sample}: result filename mismatch: {result_path}")
+        if size_dir in {"small", "large"} and result_path.parent.name != size_dir:
+            errors.append(f"line {line_no} {sample}: result size dir mismatch: metadata={size_dir}, path={result_path}")
 
     print(f"metadata={metadata_path}")
     print(f"input_root={input_root}")
     print(f"result_root={result_root}")
-    print(f"records={len(records)} input_bundles={len(input_index)} result_images={len(result_index)} paired_results={result_pairs}")
+    print(
+        f"records={len(records)} input_bundles={len(input_index)} "
+        f"result_images={len(result_index)} paired_results={result_pairs} pending_results={pending_results}"
+    )
     if size_counts:
         print("size_counts=" + ", ".join(f"{key}:{value}" for key, value in sorted(size_counts.items())))
     print(f"warnings={len(warnings)} errors={len(errors)}")
