@@ -109,6 +109,8 @@ def prompt_for_sample(sample, metadata_prompts, default_prompt):
 
 
 SAMPLE_NUMBER_PATTERN = re.compile(r"(?:^|_)(\d{6,7})(?:\D*$|$)")
+OBJECT_LABEL_PATTERN = re.compile(r"(object_\d+)")
+SIZE_BUCKETS = {"small", "large"}
 
 
 def sample_sort_key(item):
@@ -116,6 +118,83 @@ def sample_sort_key(item):
     matches = SAMPLE_NUMBER_PATTERN.findall(sample_name)
     sample_number = int(matches[-1]) if matches else float("inf")
     return sample_number, sample_key
+
+
+def object_label_for_sample(sample_name):
+    match = OBJECT_LABEL_PATTERN.search(sample_name)
+    return match.group(1) if match else "unknown"
+
+
+def size_bucket_for_sample(rel_parent):
+    if not rel_parent:
+        return "all"
+    first = rel_parent.split(os.sep, 1)[0]
+    return first if first in SIZE_BUCKETS else "all"
+
+
+def evenly_spaced(items, limit):
+    if limit is None or limit < 0 or len(items) <= limit:
+        return list(items)
+    if limit <= 0:
+        return []
+    if limit == 1:
+        return [items[0]]
+
+    max_idx = len(items) - 1
+    selected = []
+    seen = set()
+    for i in range(limit):
+        idx = int(round(i * max_idx / (limit - 1)))
+        while idx in seen and idx < max_idx:
+            idx += 1
+        while idx in seen and idx > 0:
+            idx -= 1
+        if idx not in seen:
+            selected.append(items[idx])
+            seen.add(idx)
+    return selected
+
+
+def limit_samples_per_object(samples, max_per_object):
+    if max_per_object is None or max_per_object < 0:
+        return samples
+
+    groups = {}
+    for item in samples:
+        _, sample_name, rel_parent, _ = item
+        object_label = object_label_for_sample(sample_name)
+        size_bucket = size_bucket_for_sample(rel_parent)
+        groups.setdefault(object_label, {}).setdefault(size_bucket, []).append(item)
+
+    selected_sample_names = set()
+    for buckets in groups.values():
+        active_buckets = [name for name, items in sorted(buckets.items()) if items]
+        if not active_buckets:
+            continue
+        if active_buckets == ["all"]:
+            for item in evenly_spaced(buckets["all"], max_per_object):
+                selected_sample_names.add(item[1])
+            continue
+
+        quota = {name: min(len(buckets[name]), max_per_object // len(active_buckets)) for name in active_buckets}
+        remainder = max_per_object - sum(quota.values())
+        while remainder > 0:
+            added = False
+            for name in active_buckets:
+                if quota[name] < len(buckets[name]):
+                    quota[name] += 1
+                    remainder -= 1
+                    added = True
+                    if remainder == 0:
+                        break
+            if not added:
+                break
+
+        for name in active_buckets:
+            for item in evenly_spaced(buckets[name], quota[name]):
+                selected_sample_names.add(item[1])
+
+    return [item for item in samples if item[1] in selected_sample_names]
 
 
 def discover_samples(data_dir):
@@ -184,12 +263,16 @@ def main():
     parser.add_argument('--output_ext', type=str, default='.jpg')
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
+    parser.add_argument('--max-per-object', type=int, default=None, help='Process at most this many samples per object, balanced across small/large folders')
     parser.add_argument('--reverse', action='store_true', help='Process pending samples in reverse numeric order')
 
     args = parser.parse_args()
 
     metadata_prompts = load_metadata_prompts(args.data_dir)
-    samples = discover_samples(args.data_dir)
+    all_samples = discover_samples(args.data_dir)
+    samples = limit_samples_per_object(all_samples, args.max_per_object)
+    if args.max_per_object is not None:
+        print(f"sample_limit=max_per_object:{args.max_per_object} selected_samples={len(samples)} total_samples={len(all_samples)}")
     ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
     existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
 
