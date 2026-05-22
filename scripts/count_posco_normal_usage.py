@@ -13,6 +13,8 @@ from pathlib import Path
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MASK_STEM_PATTERN = re.compile(r"(?:^|[_ -])(mask|hl)$", re.IGNORECASE)
 OBJECT_PATTERN = re.compile(r"object_(\d+)")
+CHANNEL_PATTERN = re.compile(r"CH\s*0*(\d{1,3})", re.IGNORECASE)
+NUMERIC_CHANNEL_PATTERN = re.compile(r"^(?:ch)?0*(\d{1,3})$", re.IGNORECASE)
 
 
 def is_image(path: Path) -> bool:
@@ -58,6 +60,38 @@ def normal_path(row: dict) -> str | None:
     return str(value) if value else None
 
 
+def normalize_channel(value: str | None) -> str:
+    if not value:
+        return "<missing>"
+    text = str(value).strip().strip("[](){} _-")
+    match = CHANNEL_PATTERN.search(text) or NUMERIC_CHANNEL_PATTERN.match(text)
+    if match is None:
+        return "<missing>"
+    return f"CH{int(match.group(1)):03d}"
+
+
+def channel_from_path(path_value: str | Path) -> str:
+    path = Path(path_value)
+    for text in [path.name, path.stem, *reversed(path.parts)]:
+        channel = normalize_channel(text)
+        if channel != "<missing>":
+            return channel
+    return "<missing>"
+
+
+def channel_for_row(row: dict) -> str:
+    channel = normalize_channel(row.get("channel_id"))
+    if channel != "<missing>":
+        return channel
+    path = normal_path(row)
+    if path:
+        channel = channel_from_path(path)
+        if channel != "<missing>":
+            return channel
+    sample = str(row.get("sample_id") or row.get("sample") or "")
+    return channel_from_path(sample)
+
+
 def collect_train_images(train_dir: Path) -> set[str]:
     images = set()
     for path in train_dir.rglob("*"):
@@ -98,16 +132,24 @@ def main() -> int:
     object_rows = [row for row in rows if object_label(row) == args.object_label]
 
     path_counter = Counter()
+    used_by_channel: dict[str, set[str]] = {}
     missing_normal_path_rows = 0
     for row in object_rows:
         path = normal_path(row)
         if path is None:
             missing_normal_path_rows += 1
             continue
-        path_counter[canonical(path)] += 1
+        canon = canonical(path)
+        channel = channel_for_row(row)
+        path_counter[canon] += 1
+        used_by_channel.setdefault(channel, set()).add(canon)
 
     used_normals = set(path_counter)
     train_images = collect_train_images(train_dir)
+    train_by_channel: dict[str, set[str]] = {}
+    for path in train_images:
+        train_by_channel.setdefault(channel_from_path(path), set()).add(path)
+
     overlap = used_normals & train_images
     used_not_in_train = sorted(used_normals - train_images)
     train_not_used = sorted(train_images - used_normals)
@@ -132,6 +174,18 @@ def main() -> int:
         total_uses = sum(path_counter.values())
         print(f"normal_use_rows={total_uses}")
         print(f"avg_rows_per_unique_normal={total_uses / max(len(used_normals), 1):.2f}")
+
+    print("\n[channel_usage_for_object]")
+    all_channels = sorted(set(train_by_channel) | set(used_by_channel))
+    print("  channel\tused_unique\ttrain_total\toverlap\tused_not_in_train\ttrain_not_used")
+    for channel in all_channels:
+        used_set = used_by_channel.get(channel, set())
+        train_set = train_by_channel.get(channel, set())
+        channel_overlap = used_set & train_set
+        print(
+            f"  {channel}\t{len(used_set)}\t{len(train_set)}\t{len(channel_overlap)}\t"
+            f"{len(used_set - train_set)}\t{len(train_set - used_set)}"
+        )
 
     print("\n[object_row_counts]")
     for key, value in sorted(object_counts.items()):
