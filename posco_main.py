@@ -184,6 +184,7 @@ def main():
     parser.add_argument('--output_ext', type=str, default='.jpg')
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
+    parser.add_argument('--reverse', action='store_true', help='Process pending samples in reverse numeric order')
 
     args = parser.parse_args()
 
@@ -202,6 +203,9 @@ def main():
             continue
         pending_samples.append((sample_key, sample, rel_parent, sample_dir, result_dir, output_path))
 
+    if args.reverse:
+        pending_samples.reverse()
+        print("processing_order=reverse")
     if args.skip_existing:
         print(f"samples_total={len(samples)} existing_outputs={len(existing_outputs)} pending_samples={len(pending_samples)}")
     if not pending_samples:
