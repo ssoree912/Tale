@@ -730,7 +730,7 @@ def main() -> None:
     if args.resume_numbering:
         args.skip_existing_inputs = True
 
-    for path in [out_dir, preview_dir, normalized_object_dir, args.result_dir if args.run_diffusion else None]:
+    for path in [out_dir, preview_dir, normalized_object_dir, args.result_dir.resolve() if args.result_dir else None]:
         if path is not None and path.exists() and args.overwrite:
             shutil.rmtree(path)
     out_dir.mkdir(parents=True, exist_ok=True)
