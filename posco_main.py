@@ -4,6 +4,7 @@ import torch
 import argparse
 import json
 import shutil
+import re
 import numpy as np
 from PIL import Image, ImageFilter, ImageDraw
 
@@ -107,6 +108,16 @@ def prompt_for_sample(sample, metadata_prompts, default_prompt):
     return default_prompt
 
 
+SAMPLE_NUMBER_PATTERN = re.compile(r"(?:^|_)(\d{6,7})(?:\D*$|$)")
+
+
+def sample_sort_key(item):
+    sample_key, sample_name, _, _ = item
+    matches = SAMPLE_NUMBER_PATTERN.findall(sample_name)
+    sample_number = int(matches[-1]) if matches else float("inf")
+    return sample_number, sample_key
+
+
 def discover_samples(data_dir):
     samples = []
     required = {"background.png", "foreground.png", "segmentation.png", "location.png"}
@@ -122,7 +133,7 @@ def discover_samples(data_dir):
             sample_key = os.path.join(rel_parent, sample_name) if rel_parent else sample_name
             samples.append((sample_key, sample_name, rel_parent, sample_dir))
             dirs[:] = []
-    return sorted(samples, key=lambda item: item[0])
+    return sorted(samples, key=sample_sort_key)
 
 
 def main():
