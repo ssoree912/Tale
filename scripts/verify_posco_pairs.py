@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify POSCO normal/input/anomaly pair paths from metadata.jsonl."""
+"""Verify POSCO TALE input/background and generated anomaly pairs."""
 
 from __future__ import annotations
 
@@ -15,16 +15,14 @@ REQUIRED_BUNDLE_FILES = (
     "segmentation.png",
     "location.png",
 )
+SIZE_DIRS = {"small", "large"}
 
 
-def existing_path(value: str | None) -> Path | None:
-    if not value:
-        return None
-    return Path(value).expanduser()
+def load_records(metadata_path: Path) -> dict[str, dict]:
+    records: dict[str, dict] = {}
+    if not metadata_path.exists():
+        return records
 
-
-def load_records(metadata_path: Path) -> list[dict]:
-    records = []
     with metadata_path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -34,15 +32,19 @@ def load_records(metadata_path: Path) -> list[dict]:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise SystemExit(f"invalid json at {metadata_path}:{line_no}: {exc}") from exc
+            sample = record.get("sample_id") or record.get("sample")
+            if not sample:
+                continue
             record["_line_no"] = line_no
-            records.append(record)
+            records.setdefault(sample, record)
     return records
 
 
 def build_input_index(input_root: Path) -> dict[str, Path]:
-    index = {}
+    index: dict[str, Path] = {}
     if not input_root.exists():
         return index
+
     required = set(REQUIRED_BUNDLE_FILES)
     for root, dirs, files in os.walk(input_root):
         dirs[:] = [name for name in dirs if not name.startswith(".")]
@@ -54,9 +56,10 @@ def build_input_index(input_root: Path) -> dict[str, Path]:
 
 
 def build_result_index(result_root: Path, output_ext: str, flat_output: bool) -> dict[str, Path]:
-    index = {}
+    index: dict[str, Path] = {}
     if not result_root.exists():
         return index
+
     ext = output_ext if output_ext.startswith(".") else f".{output_ext}"
     ext = ext.lower()
     for root, dirs, files in os.walk(result_root):
@@ -74,150 +77,124 @@ def build_result_index(result_root: Path, output_ext: str, flat_output: bool) ->
     return index
 
 
-def resolve_input_dir(record: dict, input_root: Path, input_index: dict[str, Path]) -> Path | None:
-    explicit = existing_path(record.get("input_dir"))
-    if explicit is not None:
-        return explicit
-
-    sample = record.get("sample_id") or record.get("sample")
-    size_dir = record.get("placement_size_dir") or record.get("placement_size_label")
-    if sample and size_dir:
-        candidate = input_root / size_dir / sample
-        if candidate.exists():
-            return candidate
-    if sample:
-        return input_index.get(sample)
-    return None
+def size_dir_for(path: Path, root: Path) -> str:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return "<outside>"
+    return rel.parts[0] if len(rel.parts) > 1 else "<flat>"
 
 
-def resolve_result_path(
-    record: dict,
-    result_root: Path,
-    result_index: dict[str, Path],
-    output_ext: str,
-    flat_output: bool,
-) -> Path | None:
-    explicit = existing_path(record.get("anomaly_path"))
-    if explicit is not None and explicit.exists():
-        return explicit
-
-    sample = record.get("sample_id") or record.get("sample")
-    size_dir = record.get("placement_size_dir") or record.get("placement_size_label")
-    ext = output_ext if output_ext.startswith(".") else f".{output_ext}"
-    if sample and size_dir:
-        if flat_output:
-            candidate = result_root / size_dir / f"{sample}{ext}"
-        else:
-            candidate = result_root / size_dir / sample / "results_highres.png"
-        if candidate.exists():
-            return candidate
-    if sample:
-        inferred = result_index.get(sample)
-        if inferred is not None:
-            return inferred
-    return explicit
-
-
-def record_value_path(record: dict, key: str, fallback: Path | None = None) -> Path | None:
-    value = existing_path(record.get(key))
-    return value if value is not None else fallback
+def check_bundle(sample: str, input_dir: Path, errors: list[str]) -> Path | None:
+    background_path = input_dir / "background.png"
+    for name in REQUIRED_BUNDLE_FILES:
+        path = input_dir / name
+        if not path.exists():
+            errors.append(f"{sample}: missing input bundle file: {path}")
+    if not background_path.exists():
+        return None
+    return background_path
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify POSCO metadata normal/input/anomaly path pairs.")
+    parser = argparse.ArgumentParser(
+        description="Verify generated POSCO pairs using input/<sample>/background.png as the normal image."
+    )
     parser.add_argument("--metadata", type=Path, default=Path("diffusion_result/input/metadata.jsonl"))
     parser.add_argument("--input-root", type=Path, default=Path("diffusion_result/input"))
     parser.add_argument("--result-root", type=Path, default=Path("diffusion_result/result"))
     parser.add_argument("--output-ext", default=".jpg")
     parser.add_argument("--flat-output", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-examples", type=int, default=20)
-    parser.add_argument("--require-results", action="store_true", help="Treat metadata rows without generated result images as errors")
-    parser.add_argument("--strict-warnings", action="store_true")
+    parser.add_argument("--require-results", action="store_true", help="Treat input bundles without generated result images as errors")
+    parser.add_argument("--strict-metadata", action="store_true", help="Also require metadata paths to agree with input/result paths")
+    parser.add_argument("--pairs-jsonl", type=Path, default=None, help="Optional output manifest of completed normal/anomaly pairs")
     args = parser.parse_args()
 
     metadata_path = args.metadata.expanduser().resolve()
     input_root = args.input_root.expanduser().resolve()
     result_root = args.result_root.expanduser().resolve()
 
-    if not metadata_path.exists():
-        raise SystemExit(f"missing metadata: {metadata_path}")
-
-    records = load_records(metadata_path)
     input_index = build_input_index(input_root)
     result_index = build_result_index(result_root, args.output_ext, args.flat_output)
+    metadata_index = load_records(metadata_path)
 
     errors: list[str] = []
     warnings: list[str] = []
-    seen_samples: dict[str, int] = {}
-    size_counts: dict[str, int] = {}
-    result_pairs = 0
+    completed_pairs: list[dict[str, str]] = []
     pending_results = 0
+    size_counts: dict[str, int] = {}
 
-    for record in records:
-        line_no = record["_line_no"]
-        sample = record.get("sample_id") or record.get("sample")
-        if not sample:
-            errors.append(f"line {line_no}: missing sample/sample_id")
-            continue
+    for sample, input_dir in sorted(input_index.items()):
+        input_size = size_dir_for(input_dir, input_root)
+        size_counts[input_size] = size_counts.get(input_size, 0) + 1
 
-        if sample in seen_samples:
-            errors.append(f"line {line_no}: duplicate sample {sample!r}; first seen at line {seen_samples[sample]}")
-        else:
-            seen_samples[sample] = line_no
-
-        size_dir = record.get("placement_size_dir") or record.get("placement_size_label") or "<none>"
-        size_counts[size_dir] = size_counts.get(size_dir, 0) + 1
-
-        normal_path = record_value_path(record, "normal_path", existing_path(record.get("background")))
-        input_dir = resolve_input_dir(record, input_root, input_index)
-        result_path = resolve_result_path(record, result_root, result_index, args.output_ext, args.flat_output)
-        result_exists = result_path is not None and result_path.exists()
-
-        if not result_exists:
+        background_path = check_bundle(sample, input_dir, errors)
+        result_path = result_index.get(sample)
+        if result_path is None or not result_path.exists():
             pending_results += 1
             if args.require_results:
-                errors.append(f"line {line_no} {sample}: result image not found under {result_root}")
+                errors.append(f"{sample}: result image not found under {result_root}")
             continue
 
-        if "normal_path" not in record:
-            warnings.append(f"line {line_no} {sample}: missing normal_path; using legacy background field")
-        if "anomaly_path" not in record:
-            warnings.append(f"line {line_no} {sample}: missing anomaly_path; inferred from result folder")
-        if "input_dir" not in record:
-            warnings.append(f"line {line_no} {sample}: missing input_dir; inferred from input folder")
+        if background_path is None:
+            continue
 
-        if normal_path is None:
-            errors.append(f"line {line_no} {sample}: missing normal_path/background")
-        elif not normal_path.exists():
-            errors.append(f"line {line_no} {sample}: normal path does not exist: {normal_path}")
+        if args.flat_output and result_path.stem != sample:
+            errors.append(f"{sample}: result filename mismatch: {result_path}")
 
-        if input_dir is None:
-            errors.append(f"line {line_no} {sample}: input bundle not found under {input_root}")
-        elif not input_dir.exists():
-            errors.append(f"line {line_no} {sample}: input_dir does not exist: {input_dir}")
-        else:
-            for name in REQUIRED_BUNDLE_FILES:
-                bundle_path = record_value_path(record, name.replace(".png", "_path"), input_dir / name)
-                if bundle_path is None or not bundle_path.exists():
-                    errors.append(f"line {line_no} {sample}: missing bundle file {name}: {bundle_path}")
-            if size_dir in {"small", "large"} and input_dir.parent.name != size_dir:
-                errors.append(f"line {line_no} {sample}: input size dir mismatch: metadata={size_dir}, path={input_dir}")
+        result_size = size_dir_for(result_path, result_root)
+        if input_size in SIZE_DIRS and result_size in SIZE_DIRS and input_size != result_size:
+            errors.append(f"{sample}: size dir mismatch: input={input_size}, result={result_size}, result_path={result_path}")
 
-        result_pairs += 1
-        if result_path.stem != sample and args.flat_output:
-            errors.append(f"line {line_no} {sample}: result filename mismatch: {result_path}")
-        if size_dir in {"small", "large"} and result_path.parent.name != size_dir:
-            errors.append(f"line {line_no} {sample}: result size dir mismatch: metadata={size_dir}, path={result_path}")
+        record = metadata_index.get(sample)
+        if record is None:
+            warnings.append(f"{sample}: metadata row not found; using input/background.png pair only")
+        elif args.strict_metadata:
+            meta_input = record.get("input_dir")
+            meta_result = record.get("anomaly_path")
+            meta_normal = record.get("normal_path") or record.get("background")
+            if meta_input and Path(meta_input).expanduser().resolve(strict=False) != input_dir.resolve(strict=False):
+                errors.append(f"{sample}: metadata input_dir mismatch: {meta_input} != {input_dir}")
+            if meta_result and Path(meta_result).expanduser().resolve(strict=False) != result_path.resolve(strict=False):
+                errors.append(f"{sample}: metadata anomaly_path mismatch: {meta_result} != {result_path}")
+            if meta_normal and not Path(meta_normal).expanduser().exists():
+                errors.append(f"{sample}: metadata normal_path/background does not exist: {meta_normal}")
 
-    print(f"metadata={metadata_path}")
+        completed_pairs.append(
+            {
+                "sample_id": sample,
+                "normal_path": str(background_path),
+                "anomaly_path": str(result_path),
+                "input_dir": str(input_dir),
+                "size_dir": input_size,
+            }
+        )
+
+    extra_results = sorted(set(result_index) - set(input_index))
+    for sample in extra_results[: args.max_examples]:
+        warnings.append(f"{sample}: result exists without matching input bundle: {result_index[sample]}")
+    if len(extra_results) > args.max_examples:
+        warnings.append(f"... {len(extra_results) - args.max_examples} more results without matching input bundles")
+
+    if args.pairs_jsonl is not None:
+        out_path = args.pairs_jsonl.expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as handle:
+            for pair in completed_pairs:
+                handle.write(json.dumps(pair, ensure_ascii=False) + "\n")
+
+    print(f"metadata={metadata_path} exists={metadata_path.exists()} records={len(metadata_index)}")
     print(f"input_root={input_root}")
     print(f"result_root={result_root}")
     print(
-        f"records={len(records)} input_bundles={len(input_index)} "
-        f"result_images={len(result_index)} paired_results={result_pairs} pending_results={pending_results}"
+        f"input_bundles={len(input_index)} result_images={len(result_index)} "
+        f"paired_results={len(completed_pairs)} pending_results={pending_results} extra_results={len(extra_results)}"
     )
     if size_counts:
         print("size_counts=" + ", ".join(f"{key}:{value}" for key, value in sorted(size_counts.items())))
+    if args.pairs_jsonl is not None:
+        print(f"pairs_jsonl={args.pairs_jsonl.expanduser().resolve()}")
     print(f"warnings={len(warnings)} errors={len(errors)}")
 
     for message in warnings[: args.max_examples]:
@@ -230,9 +207,9 @@ def main() -> int:
     if len(errors) > args.max_examples:
         print(f"[error] ... {len(errors) - args.max_examples} more")
 
-    if errors or (args.strict_warnings and warnings):
+    if errors:
         return 1
-    print("ok: metadata paths are paired")
+    print("ok: completed result pairs match input/background.png")
     return 0
 
 
