@@ -100,9 +100,16 @@ def calculate_activation_statistics(files, batch_size=50,
 
 def imread(filename):
     """
-    Loads an image file into a (height, width, 3) uint8 ndarray.
+    Loads an image file into a fixed-size RGB uint8 ndarray.
+
+    FID extraction batches images with np.array(...), so every image in a
+    batch must have the same shape. Resize here before stacking to support
+    folders containing mixed-resolution images.
     """
-    return np.asarray(Image.open(filename), dtype=np.uint8)[..., :3]
+    resampling = getattr(Image, "Resampling", Image).BILINEAR
+    image = Image.open(filename).convert("RGB")
+    image = image.resize((299, 299), resampling)
+    return np.asarray(image, dtype=np.uint8)
 
 def get_activations(files, model, batch_size=50, dims=2048,
                     cuda=True, verbose=False):
