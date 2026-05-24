@@ -24,7 +24,7 @@ from lib.evaluators.fid.calc_fid import (
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
-def collect_images(folder: str, recursive: bool = False) -> List[str]:
+def collect_images(folder: str, recursive: bool = False, filename: str = "") -> List[str]:
     path = Path(folder)
     if not path.exists():
         raise FileNotFoundError(f"Folder does not exist: {folder}")
@@ -35,11 +35,14 @@ def collect_images(folder: str, recursive: bool = False) -> List[str]:
     files = [
         str(p)
         for p in sorted(path.glob(pattern))
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        if p.is_file()
+        and p.suffix.lower() in IMAGE_EXTS
+        and (not filename or p.name == filename)
     ]
     if not files:
         raise FileNotFoundError(
             f"No supported image files found in {folder}. "
+            f"Filename filter: {filename or 'none'}. "
             f"Supported: {sorted(IMAGE_EXTS)}"
         )
     return files
@@ -51,6 +54,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--real_dir", required=True, help="Folder containing real images.")
     parser.add_argument("--fake_dir", required=True, help="Folder containing fake/generated images.")
+    parser.add_argument(
+        "--real_filename", default="",
+        help="Optional exact filename filter for real images, e.g. background.png."
+    )
+    parser.add_argument(
+        "--fake_filename", default="",
+        help="Optional exact filename filter for fake/generated images."
+    )
     parser.add_argument(
         "--batch_size", type=int, default=16,
         help="Batch size for Inception feature extraction."
@@ -100,9 +111,17 @@ def main() -> None:
         if not Path(args.model_path).is_file():
             raise FileNotFoundError(f"Model weight file does not exist: {args.model_path}")
 
-    real_files = collect_images(args.real_dir, recursive=args.recursive)
-    fake_files = collect_images(args.fake_dir, recursive=args.recursive)
+    real_files = collect_images(
+        args.real_dir, recursive=args.recursive, filename=args.real_filename
+    )
+    fake_files = collect_images(
+        args.fake_dir, recursive=args.recursive, filename=args.fake_filename
+    )
 
+    if args.real_filename:
+        print(f"Real filename filter: {args.real_filename}")
+    if args.fake_filename:
+        print(f"Fake filename filter: {args.fake_filename}")
     print(f"Found {len(real_files)} real images")
     print(f"Found {len(fake_files)} fake images")
     if len(real_files) < 100 or len(fake_files) < 100:
@@ -134,6 +153,8 @@ def main() -> None:
         "fid": fid_value,
         "real_dir": os.path.abspath(args.real_dir),
         "fake_dir": os.path.abspath(args.fake_dir),
+        "real_filename": args.real_filename,
+        "fake_filename": args.fake_filename,
         "num_real": len(real_files),
         "num_fake": len(fake_files),
         "batch_size": args.batch_size,
