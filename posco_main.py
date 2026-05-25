@@ -19,6 +19,59 @@ from modeling_clip_exceptional import CLIPTextModelExceptional
 from clip.base_clip import CLIPEncoder
 from utils import load_bg, load_fg
 
+def _butterworth_lowpass(shape, cutoff=0.1, order=4):
+    """Butterworth low-pass mask in FFT-shifted coords.
+
+    cutoff: normalized cutoff in (0, 1], measured as a fraction of the
+        max radial frequency (i.e. the distance from DC to the nearest
+        image edge in the fftshifted spectrum). cutoff=0.1 keeps the
+        innermost 10% radius.
+    order: filter order (higher = sharper transition).
+    """
+    h, w = shape
+    cy, cx = h / 2.0, w / 2.0
+    y = np.arange(h, dtype=np.float32) - cy
+    x = np.arange(w, dtype=np.float32) - cx
+    yy, xx = np.meshgrid(y, x, indexing="ij")
+    r = np.sqrt(yy * yy + xx * xx)
+    r_max = float(min(cy, cx))
+    d0 = max(cutoff * r_max, 1e-6)
+    return 1.0 / (1.0 + (r / d0) ** (2 * order))
+
+
+def inject_lowfreq(generated_pil, reference_pil, alpha=1.0, cutoff=0.1, order=4, mask_pil=None, mask_feather=0):
+    """Replace the low-frequency band of `generated` with that of `reference`
+    using a Butterworth low-pass filter in the FFT domain.
+
+    out_F = H * F(ref) + (1 - H) * F(gen)  where H is the Butterworth LP mask.
+    With alpha < 1 the replacement is partial: H_eff = alpha * H.
+    If `mask_pil` is given, only the area *outside* the mask receives the
+    replacement (foreground object stays intact); the boundary is feathered
+    in the spatial domain after IFFT to keep the FFT shift-invariant.
+    """
+    if alpha <= 0.0:
+        return generated_pil
+    gen = np.asarray(generated_pil.convert("RGB"), dtype=np.float32)
+    ref_pil = reference_pil.convert("RGB").resize(generated_pil.size, Image.LANCZOS)
+    ref = np.asarray(ref_pil, dtype=np.float32)
+    h, w = gen.shape[:2]
+    H = _butterworth_lowpass((h, w), cutoff=cutoff, order=order).astype(np.float32)
+    H_eff = alpha * H
+    out = np.empty_like(gen)
+    for c in range(3):
+        Fg = np.fft.fftshift(np.fft.fft2(gen[..., c]))
+        Fr = np.fft.fftshift(np.fft.fft2(ref[..., c]))
+        F_out = H_eff * Fr + (1.0 - H_eff) * Fg
+        out[..., c] = np.fft.ifft2(np.fft.ifftshift(F_out)).real
+    if mask_pil is not None:
+        m = np.asarray(mask_pil.convert("L").resize(generated_pil.size, Image.NEAREST), dtype=np.float32) / 255.0
+        if mask_feather > 0:
+            m = cv2.GaussianBlur(m, (0, 0), float(mask_feather))
+        m = m[..., None]
+        out = m * gen + (1.0 - m) * out
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+
+
 def get_crop_box(mask_path, padding_factor=0.2):
     mask = Image.open(mask_path).convert("L")
     mask_np = np.array(mask)
@@ -197,6 +250,64 @@ def limit_samples_per_object(samples, max_per_object):
     return [item for item in samples if item[1] in selected_sample_names]
 
 
+def distribute_quota(capacities, target):
+    active = [name for name, capacity in sorted(capacities.items()) if capacity > 0]
+    if target is None or target < 0:
+        return {name: capacities[name] for name in active}
+    if target <= 0 or not active:
+        return {name: 0 for name in active}
+
+    total_capacity = sum(capacities[name] for name in active)
+    target = min(target, total_capacity)
+    quota = {name: min(capacities[name], target // len(active)) for name in active}
+    remainder = target - sum(quota.values())
+    while remainder > 0:
+        added = False
+        for name in active:
+            if quota[name] < capacities[name]:
+                quota[name] += 1
+                remainder -= 1
+                added = True
+                if remainder == 0:
+                    break
+        if not added:
+            break
+    return quota
+
+
+def select_target_sample_count(samples, target_sample_count):
+    if target_sample_count is None or target_sample_count < 0 or len(samples) <= target_sample_count:
+        return samples
+    if target_sample_count <= 0:
+        return []
+
+    object_groups = {}
+    for item in samples:
+        _, sample_name, rel_parent, _ = item
+        object_label = object_label_for_sample(sample_name)
+        size_bucket = size_bucket_for_sample(rel_parent)
+        object_groups.setdefault(object_label, {}).setdefault(size_bucket, []).append(item)
+
+    object_capacities = {
+        object_label: sum(len(items) for items in buckets.values())
+        for object_label, buckets in object_groups.items()
+    }
+    object_quota = distribute_quota(object_capacities, target_sample_count)
+
+    selected_sample_keys = set()
+    for object_label, buckets in sorted(object_groups.items()):
+        quota_for_object = object_quota.get(object_label, 0)
+        if quota_for_object <= 0:
+            continue
+        bucket_capacities = {name: len(items) for name, items in buckets.items()}
+        bucket_quota = distribute_quota(bucket_capacities, quota_for_object)
+        for bucket_name, quota in bucket_quota.items():
+            for item in evenly_spaced(buckets[bucket_name], quota):
+                selected_sample_keys.add(item[0])
+
+    return [item for item in samples if item[0] in selected_sample_keys]
+
+
 def discover_samples(data_dir):
     samples = []
     required = {"background.png", "foreground.png", "segmentation.png", "location.png"}
@@ -264,7 +375,13 @@ def main():
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
     parser.add_argument('--max-per-object', type=int, default=None, help='Process at most this many samples per object, balanced across small/large folders')
+    parser.add_argument('--target-sample-count', type=int, default=None, help='Process about this many samples total, balanced across objects and small/large folders')
     parser.add_argument('--reverse', action='store_true', help='Process pending samples in reverse numeric order')
+    parser.add_argument('--lowfreq_alpha', type=float, default=0.0, help='Strength of Butterworth low-freq replacement (0 disables, 1 = fully replace low band with original bg).')
+    parser.add_argument('--lowfreq_cutoff', type=float, default=0.1, help='Butterworth low-pass cutoff as a fraction of max radial frequency (0-1). 0.1 = innermost 10%% of the spectrum.')
+    parser.add_argument('--lowfreq_order', type=int, default=4, help='Butterworth filter order (higher = sharper cutoff).')
+    parser.add_argument('--lowfreq_protect_fg', action='store_true', help='Use the object mask to skip low-freq replacement inside the foreground region.')
+    parser.add_argument('--lowfreq_mask_feather', type=float, default=4.0, help='Feathering sigma for the protect-fg mask edge (pixels in crop space).')
 
     args = parser.parse_args()
 
@@ -273,6 +390,13 @@ def main():
     samples = limit_samples_per_object(all_samples, args.max_per_object)
     if args.max_per_object is not None:
         print(f"sample_limit=max_per_object:{args.max_per_object} selected_samples={len(samples)} total_samples={len(all_samples)}")
+    before_target_count = len(samples)
+    samples = select_target_sample_count(samples, args.target_sample_count)
+    if args.target_sample_count is not None:
+        print(
+            f"sample_limit=target_sample_count:{args.target_sample_count} "
+            f"selected_samples={len(samples)} candidate_samples={before_target_count} total_samples={len(all_samples)}"
+        )
     ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
     existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
 
@@ -401,7 +525,19 @@ def main():
         crop_h = crop_box[3] - crop_box[1]
         
         restored_crop = generated_crop.resize((crop_w, crop_h), Image.LANCZOS)
-        
+
+        if args.lowfreq_alpha > 0.0:
+            fg_mask_for_protect = cropped_mask if args.lowfreq_protect_fg else None
+            restored_crop = inject_lowfreq(
+                restored_crop,
+                cropped_bg,
+                alpha=args.lowfreq_alpha,
+                cutoff=args.lowfreq_cutoff,
+                order=args.lowfreq_order,
+                mask_pil=fg_mask_for_protect,
+                mask_feather=args.lowfreq_mask_feather,
+            )
+
         paste_x = max(0, crop_box[0])
         paste_y = max(0, crop_box[1])
         
