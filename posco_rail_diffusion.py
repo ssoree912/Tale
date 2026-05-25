@@ -43,7 +43,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from posco_dataset_gen import extract_foreground
+from posco_dataset_gen import extract_foreground, extract_foreground_with_mask
 
 
 ROOT = Path(__file__).resolve().parent
@@ -59,6 +59,7 @@ class ObjectSpec:
     label: str
     source_path: Path
     normalized_path: Path
+    mask_path: Path | None = None
 
 
 def natural_key(path: Path) -> list[object]:
@@ -212,8 +213,31 @@ def default_highlight_dir() -> Path | None:
     return ROOT / "backroung_highlight"
 
 
+OBJECT_MASK_SUFFIXES = ("_mask", "-mask", "_seg", "-seg", "_segmentation", "-segmentation")
+
+
+def is_object_mask_image(path: Path) -> bool:
+    stem = path.stem.lower()
+    return stem.endswith(OBJECT_MASK_SUFFIXES)
+
+
+def object_mask_candidates(src: Path) -> list[Path]:
+    candidates = []
+    for suffix in ["_mask", "_seg", "_segmentation"]:
+        for ext in [".png", ".jpg", ".jpeg", ".bmp", ".webp"]:
+            candidates.append(src.with_name(f"{src.stem}{suffix}{ext}"))
+    return candidates
+
+
+def find_object_mask(src: Path) -> Path | None:
+    for candidate in object_mask_candidates(src):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def normalize_objects(object_dir: Path, dst_dir: Path | None, limit: int | None = None) -> list[ObjectSpec]:
-    paths = list(iter_images(object_dir))
+    paths = [path for path in iter_images(object_dir) if not is_object_mask_image(path)]
     if limit is not None:
         paths = paths[:limit]
     specs: list[ObjectSpec] = []
@@ -222,11 +246,16 @@ def normalize_objects(object_dir: Path, dst_dir: Path | None, limit: int | None 
 
     for idx, src in enumerate(paths, start=1):
         label = f"object_{idx}"
+        src_mask = find_object_mask(src)
         dst = src
+        dst_mask = src_mask
         if dst_dir is not None:
             dst = dst_dir / f"{label}{src.suffix.lower()}"
             shutil.copy2(src, dst)
-        specs.append(ObjectSpec(label=label, source_path=src, normalized_path=dst))
+            if src_mask is not None:
+                dst_mask = dst_dir / f"{label}_mask{src_mask.suffix.lower()}"
+                shutil.copy2(src_mask, dst_mask)
+        specs.append(ObjectSpec(label=label, source_path=src, normalized_path=dst, mask_path=dst_mask))
     return specs
 
 
@@ -799,7 +828,10 @@ def main() -> None:
     with meta_path.open(meta_mode, encoding="utf-8") as meta_f:
         for obj in objects:
             try:
-                fg_rgb, seg = extract_foreground(obj.normalized_path)
+                if obj.mask_path is not None:
+                    fg_rgb, seg = extract_foreground_with_mask(obj.normalized_path, obj.mask_path)
+                else:
+                    fg_rgb, seg = extract_foreground(obj.normalized_path)
             except Exception as exc:
                 print(f"[skip-object] {obj.source_path}: {exc}", flush=True)
                 continue
@@ -876,6 +908,7 @@ def main() -> None:
                     "object_label": obj.label,
                     "object_source": str(obj.source_path),
                     "object_file": str(obj.normalized_path),
+                    "object_mask": str(obj.mask_path) if obj.mask_path is not None else None,
                     "background": str(bg_path),
                     "location_box_xywh": list(loc),
                     "placement_index": placement_idx,

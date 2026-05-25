@@ -54,24 +54,9 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
     return (labels == keep).astype(np.uint8) * 255
 
 
-def extract_foreground(img_path: Path):
-    """Return (foreground_rgb_on_white, segmentation_uint8) at FG_SIZE x FG_SIZE.
-
-    Tries alpha first (PNG with transparency), otherwise falls back to solid-bg keying
-    using the dominant border color.
-    """
-    pil = Image.open(img_path)
-    if pil.mode == "RGBA":
-        arr = np.array(pil)
-        rgb = arr[..., :3]
-        alpha = arr[..., 3]
-        if alpha.min() < 250 and alpha.max() > 5:  # has real transparency
-            mask = (alpha > 32).astype(np.uint8) * 255
-        else:
-            rgb, mask = _solid_bg_key(rgb)
-    else:
-        rgb = np.array(pil.convert("RGB"))
-        rgb, mask = _solid_bg_key(rgb)
+def _foreground_from_rgb_mask(rgb: np.ndarray, mask: np.ndarray, img_path: Path):
+    """Return (foreground_rgb_on_white, segmentation_uint8) at FG_SIZE x FG_SIZE."""
+    mask = (mask > 128).astype(np.uint8) * 255
 
     # clean up
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
@@ -108,6 +93,38 @@ def extract_foreground(img_path: Path):
     rgb_out = cv2.resize(rgb_sq, (FG_SIZE, FG_SIZE), interpolation=cv2.INTER_AREA)
     mask_out = cv2.resize(mask_sq, (FG_SIZE, FG_SIZE), interpolation=cv2.INTER_NEAREST)
     return rgb_out, mask_out
+
+
+def extract_foreground(img_path: Path):
+    """Return (foreground_rgb_on_white, segmentation_uint8) at FG_SIZE x FG_SIZE.
+
+    Tries alpha first (PNG with transparency), otherwise falls back to solid-bg keying
+    using the dominant border color.
+    """
+    pil = Image.open(img_path)
+    if pil.mode == "RGBA":
+        arr = np.array(pil)
+        rgb = arr[..., :3]
+        alpha = arr[..., 3]
+        if alpha.min() < 250 and alpha.max() > 5:  # has real transparency
+            mask = (alpha > 32).astype(np.uint8) * 255
+        else:
+            rgb, mask = _solid_bg_key(rgb)
+    else:
+        rgb = np.array(pil.convert("RGB"))
+        rgb, mask = _solid_bg_key(rgb)
+
+    return _foreground_from_rgb_mask(rgb, mask, img_path)
+
+
+def extract_foreground_with_mask(img_path: Path, mask_path: Path):
+    """Extract foreground from a real object photo using an explicit mask image."""
+    rgb = np.array(Image.open(img_path).convert("RGB"))
+    mask_pil = Image.open(mask_path).convert("L")
+    if mask_pil.size != (rgb.shape[1], rgb.shape[0]):
+        mask_pil = mask_pil.resize((rgb.shape[1], rgb.shape[0]), Image.NEAREST)
+    mask = np.array(mask_pil)
+    return _foreground_from_rgb_mask(rgb, mask, img_path)
 
 
 def _solid_bg_key(rgb: np.ndarray):
