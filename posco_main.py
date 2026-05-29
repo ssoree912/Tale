@@ -250,64 +250,6 @@ def limit_samples_per_object(samples, max_per_object):
     return [item for item in samples if item[1] in selected_sample_names]
 
 
-def distribute_quota(capacities, target):
-    active = [name for name, capacity in sorted(capacities.items()) if capacity > 0]
-    if target is None or target < 0:
-        return {name: capacities[name] for name in active}
-    if target <= 0 or not active:
-        return {name: 0 for name in active}
-
-    total_capacity = sum(capacities[name] for name in active)
-    target = min(target, total_capacity)
-    quota = {name: min(capacities[name], target // len(active)) for name in active}
-    remainder = target - sum(quota.values())
-    while remainder > 0:
-        added = False
-        for name in active:
-            if quota[name] < capacities[name]:
-                quota[name] += 1
-                remainder -= 1
-                added = True
-                if remainder == 0:
-                    break
-        if not added:
-            break
-    return quota
-
-
-def select_target_sample_count(samples, target_sample_count):
-    if target_sample_count is None or target_sample_count < 0 or len(samples) <= target_sample_count:
-        return samples
-    if target_sample_count <= 0:
-        return []
-
-    object_groups = {}
-    for item in samples:
-        _, sample_name, rel_parent, _ = item
-        object_label = object_label_for_sample(sample_name)
-        size_bucket = size_bucket_for_sample(rel_parent)
-        object_groups.setdefault(object_label, {}).setdefault(size_bucket, []).append(item)
-
-    object_capacities = {
-        object_label: sum(len(items) for items in buckets.values())
-        for object_label, buckets in object_groups.items()
-    }
-    object_quota = distribute_quota(object_capacities, target_sample_count)
-
-    selected_sample_keys = set()
-    for object_label, buckets in sorted(object_groups.items()):
-        quota_for_object = object_quota.get(object_label, 0)
-        if quota_for_object <= 0:
-            continue
-        bucket_capacities = {name: len(items) for name, items in buckets.items()}
-        bucket_quota = distribute_quota(bucket_capacities, quota_for_object)
-        for bucket_name, quota in bucket_quota.items():
-            for item in evenly_spaced(buckets[bucket_name], quota):
-                selected_sample_keys.add(item[0])
-
-    return [item for item in samples if item[0] in selected_sample_keys]
-
-
 def discover_samples(data_dir):
     samples = []
     required = {"background.png", "foreground.png", "segmentation.png", "location.png"}
@@ -349,12 +291,11 @@ def collect_existing_outputs(output_dir, flat_output, output_ext):
 
 def output_paths(output_dir, rel_parent, sample, flat_output, output_ext):
     ext = output_ext if output_ext.startswith(".") else f".{output_ext}"
-    output_base_dir = os.path.join(output_dir, rel_parent) if rel_parent else output_dir
     if flat_output:
-        result_dir = os.path.join(output_base_dir, f".tmp_{sample}")
-        output_path = os.path.join(output_base_dir, f"{sample}{ext}")
+        result_dir = os.path.join(output_dir, f".tmp_{sample}")
+        output_path = os.path.join(output_dir, f"{sample}{ext}")
     else:
-        result_dir = os.path.join(output_base_dir, sample)
+        result_dir = os.path.join(output_dir, sample)
         output_path = os.path.join(result_dir, "results_highres.png")
     return result_dir, output_path
 
@@ -370,13 +311,11 @@ def main():
     parser.add_argument('--comp_guidance_scale', type=float, default=10.)
     parser.add_argument('--num_inference_steps', type=int, default=20)
     parser.add_argument('--crop_padding', type=float, default=0.5, help='Padding ratio for cropping context')
-    parser.add_argument('--flat_output', action='store_true', help='Save output_dir/<relative>/<sample>.jpg instead of output_dir/<relative>/<sample>/results_highres.png')
+    parser.add_argument('--flat_output', action='store_true', help='Save output_dir/<sample>.jpg instead of output_dir/<sample>/results_highres.png')
     parser.add_argument('--output_ext', type=str, default='.jpg')
     parser.add_argument('--default_prompt', type=str, default='an industrial object on a railway track at a steel mill')
     parser.add_argument('--skip-existing', '--skip_existing', dest='skip_existing', action='store_true', help='Skip samples whose output image already exists')
-    parser.add_argument('--max-per-object', type=int, default=None, help='Process at most this many samples per object, balanced across small/large folders')
-    parser.add_argument('--target-sample-count', type=int, default=None, help='Process about this many samples total, balanced across objects and small/large folders')
-    parser.add_argument('--reverse', action='store_true', help='Process pending samples in reverse numeric order')
+    parser.add_argument('--max-per-object', type=int, default=None, help='Process at most this many samples per object')
     parser.add_argument('--lowfreq_alpha', type=float, default=0.0, help='Strength of Butterworth low-freq replacement (0 disables, 1 = fully replace low band with original bg).')
     parser.add_argument('--lowfreq_cutoff', type=float, default=0.1, help='Butterworth low-pass cutoff as a fraction of max radial frequency (0-1). 0.1 = innermost 10%% of the spectrum.')
     parser.add_argument('--lowfreq_order', type=int, default=4, help='Butterworth filter order (higher = sharper cutoff).')
@@ -390,13 +329,6 @@ def main():
     samples = limit_samples_per_object(all_samples, args.max_per_object)
     if args.max_per_object is not None:
         print(f"sample_limit=max_per_object:{args.max_per_object} selected_samples={len(samples)} total_samples={len(all_samples)}")
-    before_target_count = len(samples)
-    samples = select_target_sample_count(samples, args.target_sample_count)
-    if args.target_sample_count is not None:
-        print(
-            f"sample_limit=target_sample_count:{args.target_sample_count} "
-            f"selected_samples={len(samples)} candidate_samples={before_target_count} total_samples={len(all_samples)}"
-        )
     ext = args.output_ext if args.output_ext.startswith(".") else f".{args.output_ext}"
     existing_outputs = collect_existing_outputs(args.output_dir, args.flat_output, ext) if args.skip_existing else {}
 
@@ -410,9 +342,6 @@ def main():
             continue
         pending_samples.append((sample_key, sample, rel_parent, sample_dir, result_dir, output_path))
 
-    if args.reverse:
-        pending_samples.reverse()
-        print("processing_order=reverse")
     if args.skip_existing:
         print(f"samples_total={len(samples)} existing_outputs={len(existing_outputs)} pending_samples={len(pending_samples)}")
     if not pending_samples:

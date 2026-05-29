@@ -5,15 +5,9 @@ This script expects normal POSCO CCTV frames under a train directory such as:
     ../anomaly_detection/datat/posco/train/02/*.jpg
     ../anomaly_detection/datat/posco/train/04/*.jpg
 
-It creates TALE-style sample folders grouped by placement size:
+It creates TALE-style sample folders directly under the input root:
 
-    <out>/small/<sample>/
-        background.png
-        foreground.png
-        segmentation.png
-        location.png
-
-    <out>/large/<sample>/
+    <out>/<sample>/
         background.png
         foreground.png
         segmentation.png
@@ -586,56 +580,9 @@ def load_existing_generation_keys(meta_path: Path) -> set[tuple[str, str, int, s
     return keys
 
 
-def evenly_spaced_items(items: list[tuple[Path, int]], limit: int) -> list[tuple[Path, int]]:
-    if limit < 0 or len(items) <= limit:
-        return list(items)
-    if limit <= 0:
-        return []
-    if limit == 1:
-        return [items[0]]
-
-    max_idx = len(items) - 1
-    selected: list[tuple[Path, int]] = []
-    seen: set[int] = set()
-    for i in range(limit):
-        idx = int(round(i * max_idx / (limit - 1)))
-        while idx in seen and idx < max_idx:
-            idx += 1
-        while idx in seen and idx > 0:
-            idx -= 1
-        if idx not in seen:
-            selected.append(items[idx])
-            seen.add(idx)
-    return selected
-
-
-def distribute_target_count(capacities: dict[str, int], target: int) -> dict[str, int]:
-    target = min(target, sum(capacities.values()))
-    quotas = {key: 0 for key in capacities}
-    active = [key for key, capacity in capacities.items() if capacity > 0]
-    remaining = target
-
-    while remaining > 0 and active:
-        share = max(1, remaining // len(active))
-        next_active: list[str] = []
-        for key in active:
-            room = capacities[key] - quotas[key]
-            add = min(room, share, remaining)
-            quotas[key] += add
-            remaining -= add
-            if quotas[key] < capacities[key]:
-                next_active.append(key)
-            if remaining == 0:
-                break
-        active = next_active
-    return quotas
-
-
 def build_generation_plan(
     objects: list[ObjectSpec],
     backgrounds: list[Path],
-    placements_per_pair: int,
-    target_sample_count: int | None,
     all_backgrounds_per_object: bool,
     n_per_object: int,
     rng: random.Random,
@@ -647,20 +594,9 @@ def build_generation_plan(
         else:
             sample_count = min(n_per_object, len(backgrounds))
             bg_pool = rng.sample(backgrounds, k=sample_count)
-        candidates[obj.label] = [(bg_path, placement_idx) for bg_path in bg_pool for placement_idx in range(1, placements_per_pair + 1)]
+        candidates[obj.label] = [(bg_path, 1) for bg_path in bg_pool]
 
-    if target_sample_count is None or target_sample_count < 0:
-        return candidates
-
-    capacities = {label: len(items) for label, items in candidates.items()}
-    quotas = distribute_target_count(capacities, target_sample_count)
-    planned = {label: evenly_spaced_items(items, quotas[label]) for label, items in candidates.items()}
-    print(
-        f"target_sample_count={target_sample_count} candidate_samples={sum(capacities.values())} "
-        f"planned_samples={sum(len(items) for items in planned.values())}",
-        flush=True,
-    )
-    return planned
+    return candidates
 
 
 def run_diffusion(args: argparse.Namespace, data_dir: Path) -> None:
@@ -685,9 +621,19 @@ def run_diffusion(args: argparse.Namespace, data_dir: Path) -> None:
         str(args.num_inference_steps),
         "--crop_padding",
         str(args.crop_padding),
+        "--lowfreq_alpha",
+        str(args.lowfreq_alpha),
+        "--lowfreq_cutoff",
+        str(args.lowfreq_cutoff),
+        "--lowfreq_order",
+        str(args.lowfreq_order),
+        "--lowfreq_mask_feather",
+        str(args.lowfreq_mask_feather),
         "--default_prompt",
         args.prompt_template,
     ]
+    if args.lowfreq_protect_fg:
+        cmd.append("--lowfreq_protect_fg")
     if args.flat_results:
         cmd.extend(["--flat_output", "--output_ext", ".jpg"])
     if args.skip_existing:
@@ -714,14 +660,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-per-object", type=int, default=3, help="Number of backgrounds sampled per object")
     parser.add_argument("--all-backgrounds-per-object", action="store_true", help="Use every background image for every object instead of random sampling")
     parser.add_argument("--background-limit", type=int, default=None, help="Limit available backgrounds after sorting")
-    parser.add_argument("--target-sample-count", type=int, default=None, help="Target total number of TALE input samples, balanced across objects")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--placement-size-frac", type=float, nargs=2, default=(0.10, 0.20), metavar=("MIN", "MAX"), help="Base object width fraction range")
     parser.add_argument("--large-placement-size-frac", type=float, nargs=2, default=None, metavar=("MIN", "MAX"), help="Optional large object width fraction range")
-    parser.add_argument("--large-placement-every", type=int, default=0, help="Use large-placement-size-frac every Nth placement within each object/background pair")
-    parser.add_argument("--base-placement-size-label", default="small", help="Folder/metadata label for the base placement-size range when no large range is active")
+    parser.add_argument("--large-placement-every", type=int, default=0, help="Use large-placement-size-frac when the internal placement index is divisible by N")
+    parser.add_argument("--base-placement-size-label", default="default", help="Metadata label for the base placement-size range when no large range is active")
     parser.add_argument("--placement-strategy", choices=("mixed", "uniform", "depth-weighted"), default="mixed", help="Rail-mask sampling strategy; uniform gives more diverse locations")
-    parser.add_argument("--placements-per-pair", type=int, default=1, help="Number of random locations for each object/background pair")
     parser.add_argument("--prompt-template", default="an industrial object on a railway track at a steel mill")
     parser.add_argument("--sample-name-format", choices=("prompt", "posco"), default="prompt", help="Use prompt folders or POSCO ids such as ch002_object_1_0000001")
     parser.add_argument("--flat-results", action="store_true", help="Save diffusion results directly as output_dir/<sample>.jpg")
@@ -738,6 +682,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--comp_guidance_scale", type=float, default=10.0)
     parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument("--crop_padding", type=float, default=0.5)
+    parser.add_argument("--lowfreq_alpha", type=float, default=0.0, help="Strength of low-frequency replacement; 0 disables it")
+    parser.add_argument("--lowfreq_cutoff", type=float, default=0.1, help="Low-pass cutoff as a fraction of max radial frequency")
+    parser.add_argument("--lowfreq_order", type=int, default=4, help="Butterworth filter order")
+    parser.add_argument("--lowfreq_protect_fg", action="store_true", help="Protect the foreground region from low-frequency replacement")
+    parser.add_argument("--lowfreq_mask_feather", type=float, default=4.0, help="Foreground protection mask feathering sigma")
     return parser.parse_args()
 
 
@@ -806,8 +755,6 @@ def main() -> None:
     generation_plan = build_generation_plan(
         objects,
         backgrounds,
-        args.placements_per_pair,
-        args.target_sample_count,
         args.all_backgrounds_per_object,
         args.n_per_object,
         rng,
@@ -885,15 +832,14 @@ def main() -> None:
                 counter += 1
                 prompt = prompt_for_object(obj.label, args.prompt_template)
                 sample_name = sample_name_for(channel_id, obj.label, counter, prompt, args.sample_name_format)
-                size_dir_name = placement_size_label
-                sample_dir = out_dir / size_dir_name / sample_name
+                sample_dir = out_dir / sample_name
                 write_bundle(sample_dir, bg_path, fg_rgb, seg, loc, (bw, bh))
 
                 if preview_dir is not None:
-                    write_preview(preview_dir / size_dir_name / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
+                    write_preview(preview_dir / f"{sample_name}.jpg", bg_bgr, rail_mask, loc)
 
                 result_root = args.result_dir.resolve()
-                anomaly_path = result_root / size_dir_name / f"{sample_name}.jpg" if args.flat_results else result_root / size_dir_name / sample_name / "results_highres.png"
+                anomaly_path = result_root / f"{sample_name}.jpg" if args.flat_results else result_root / sample_name / "results_highres.png"
                 record = {
                     "sample": sample_name,
                     "sample_id": sample_name,
@@ -914,14 +860,13 @@ def main() -> None:
                     "placement_index": placement_idx,
                     "placement_strategy": args.placement_strategy,
                     "placement_size_label": placement_size_label,
-                    "placement_size_dir": size_dir_name,
                     "placement_size_frac": list(placement_size_frac),
                     "rail_mask_source": mask_source,
                     "channel_id": channel_id,
                 }
                 meta_f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 existing_generation_keys.add(current_key)
-                print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx}/{args.placements_per_pair} size={placement_size_label}:{placement_size_frac} mask={mask_source}", flush=True)
+                print(f"[ok] {sample_name} bg={bg_path.relative_to(train_dir)} channel={channel_id} box={loc} placement={placement_idx} size={placement_size_label}:{placement_size_frac} mask={mask_source}", flush=True)
 
     print(f"done: wrote {counter - start_counter} new samples to {out_dir}", flush=True)
     if args.skip_existing_inputs:
