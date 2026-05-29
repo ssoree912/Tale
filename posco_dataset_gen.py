@@ -127,6 +127,10 @@ def extract_foreground_with_mask(img_path: Path, mask_path: Path):
     return _foreground_from_rgb_mask(rgb, mask, img_path)
 
 
+# Backward-compatible alias for older scripts that used the misspelled name.
+extract_forground_with_mask = extract_foreground_with_mask
+
+
 def _solid_bg_key(rgb: np.ndarray):
     """Background-color keying: any pixel close to estimated border color becomes background."""
     bg = _border_color(rgb)
