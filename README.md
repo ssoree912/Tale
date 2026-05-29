@@ -80,6 +80,7 @@ diffusion_result/input/
 ## 6. Input만 생성
 
 ```bash
+cd /path/to/Tale
 CUDA_VISIBLE_DEVICES=1 python posco_rail_diffusion.py \
   --train-dir /home/poscouser/kookmin/anomaly_detection/data/posco/train \
   --object-dir objects \
@@ -109,6 +110,7 @@ diffusion_result/objects_normalized/
 ## 7. Input 생성 후 Diffusion까지 실행
 
 ```bash
+cd /path/to/Tale
 CUDA_VISIBLE_DEVICES=1 python posco_rail_diffusion.py \
   --train-dir /home/poscouser/kookmin/anomaly_detection/data/posco/train \
   --object-dir objects \
@@ -146,6 +148,7 @@ diffusion_result/result/
 ## 8. 이미 생성된 Input으로 Diffusion만 실행
 
 ```bash
+cd /path/to/Tale
 CUDA_VISIBLE_DEVICES=1 python posco_main.py \
   --model_path stable-diffusion-2-1-base \
   --data_dir diffusion_result/input \
